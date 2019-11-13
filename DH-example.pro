@@ -8,11 +8,13 @@ CONFIG += debug_and_release
 INCLUDEPATH	+= /usr/local/include/
 INCLUDEPATH	+=./
 INCLUDEPATH	+=../../
-INCLUDEPATH	+= ../../../AVProto/
+INCLUDEPATH	+= ../AVProto/
 
 SOURCES += \
 	DH-example.c \
-    utility_routines.c
+    utility_routines.c \
+    gost89.c \
+    ../AVProto/avproto.c
 
 
 
