@@ -1,5 +1,5 @@
 ﻿#define	__MODULE__	"DHEXMPL"
-#define	__IDENT__	"X.00-03"
+#define	__IDENT__	"X.00-04"
 
 #ifdef	__GNUC__
 	#ident			__IDENT__
@@ -19,6 +19,8 @@
 **	alghorytm
 **
 **  DESCRIPTION: Just a demonatration of using OpenSSL API BN's routines to implement Diffie-Hellman keys exchange.
+**
+**  ENVIRONMENT: Linux, Windows
 **
 **
 **  DESIGN ISSUE:
@@ -75,6 +77,9 @@
 **	13-NOV-2019	RRL	X.00-03 : Added client and server threads to demonstrate DHKEXC
 **				in client server interoperation.
 **
+**	14-NOV-2019	RRL	X.00-04 : Corrected logic of encryption with block based GOST 89 by adding
+**				special PADDING TLV into the PDU.
+**
 */
 
 #include	<stdio.h>
@@ -83,7 +88,6 @@
 #include	<unistd.h>
 #include	<errno.h>
 #include	<poll.h>
-
 #include	<pthread.h>
 #include	<unistd.h>
 #include	<netinet/ip.h>
@@ -157,9 +161,10 @@ typedef struct	__rnd_seed__
 
 
 #define	DH$SZ_PRIME	(256)		/* 256 bits for GOST89	*/
-#define	DH$SZ_TESTDATA	9
+#define	DH$SZ_TESTDATA	(9+5)
 
-const char VCLOUD$K_PROTOSIG [] = "Z0magic", VCLOUD$K_PADDING [] = "TH3 $tar1et $qu4d";
+const char	VCLOUD$K_PROTOSIG [] = "Z0magic",
+		VCLOUD$K_PADDING [2 * GOST89_BLOCK_SIZE] = "TH3 $tar1et $qu4d";
 
 enum	{
 	VCLOUD$K_TAG_DH_P	= 135,
@@ -187,7 +192,22 @@ inline static int timespec2msec (
 
 
 
-
+/*
+ *   DESCRIPTION: Initialize/generate constants for first phase of the Diffie-Hellman.
+ *	Is supposed to be called at server side.
+ *
+ *   INPUT:
+ *	NONE
+ *
+ *   OUTPUT:
+ *	a:	private secret (private key)
+ *	p:	a public prime 'p'
+ *	g:	a public primary root  'g'
+ *	A:	a public key
+ *
+ *  RETURN:
+ *	condition code, see STS$K_* constant
+ */
 static	int	__dh_server_init	(
 			BIGNUM	*a,
 			BIGNUM	*p,
@@ -274,7 +294,22 @@ char	errbuf[512];
 }
 
 
-static	int	__dh_client_init	(
+/*
+ *   DESCRIPTION: Initialize/generate constants for second phase of the Diffie-Hellman.
+ *	Is supposed to be called at client side.
+ *
+ *   INPUT:
+ *	p:	a public prime 'p' - has been received from server side
+ *	g:	a public primary root  'g' - - has been received from server side
+ *
+ *   OUTPUT:
+ *	b:	private secret (private key)
+ *	B:	a public key
+ *
+ *  RETURN:
+ *	condition code, see STS$K_* constant
+ */
+static	int	__dh_client_init(
 			BIGNUM	*b,
 			BIGNUM	*p,
 			BIGNUM	*g,
@@ -313,6 +348,21 @@ char	errbuf[512];
 }
 
 
+/*
+ *   DESCRIPTION: Compute a session key (it should be shared between client and server).
+ *
+ *   INPUT:
+ *	pubk:	a public key received from other side
+ *	privk:	a private key of local side
+ *	p:	a public prime 'p'
+ *
+ *   OUTPUT:
+ *	skey:	a shared/session key
+ *
+ *  RETURN:
+ *	condition code, see STS$K_* constant
+ */
+
 static	int	__dh_session_key(
 			BIGNUM	*pubk,
 			BIGNUM	*privk,
@@ -324,10 +374,16 @@ int	status = STS$K_ERROR, rc;
 BN_CTX	*bn_ctx; /* used internally by the bignum lib */
 
 	/* Compute session key as: Session Key = PublickKey ^ PrivateKey mod p */
-	bn_ctx = BN_CTX_new();
-	BN_mod_exp(skey, pubk, privk, p, bn_ctx);
-	BN_CTX_free(bn_ctx);
+	if ( !(bn_ctx = BN_CTX_new()) )
+		ERR_print_errors_fp(stdout);
+	else if ( !BN_mod_exp(skey, pubk, privk, p, bn_ctx) )
+		ERR_print_errors_fp(stdout);
+	else	status = STS$K_SUCCESS;
 
+	if ( bn_ctx )
+		BN_CTX_free(bn_ctx);
+
+	return	status;
 }
 
 
@@ -338,7 +394,7 @@ BN_CTX	*bn_ctx; /* used internally by the bignum lib */
  *   INPUT:
  *	sd:	Network socket descriptor
  *	buf:	A buffer with data to be sent
- *	bufsz:	A number of bytes to be read
+ *	bufsz:	A number of bytes to be sent
  *
  *  OUTPUT:
  *	NONE
@@ -483,8 +539,19 @@ char	*bufp = (char *) buf;
 }
 
 
-
-
+/*
+ *   DESCRIPTION: Send AVPROTO's PDU over TCP connection.
+ *
+ *   INPUT:
+ *	sd:	Network socket descriptor
+ *	pdubuf:	PDU to be send
+ *
+ *  OUTPUT:
+ *	NONE
+ *
+ *  RETURN:
+ *	condition code, see STS$K_* constant
+ */
 static int	pdu_xmit(
 		int	sd,
 		void	*pdubuf
@@ -504,6 +571,20 @@ unsigned status, u_len, u_csr, u_seq;
 	return	STS$K_SUCCESS;
 }
 
+
+/*
+ *   DESCRIPTION: Receive (read from socket buffer) AVPROTO's PDU.
+ *
+ *   INPUT:
+ *	sd:	Network socket descriptor
+ *	pdubuf:	PDU to be send
+ *
+ *  OUTPUT:
+ *	NONE
+ *
+ *  RETURN:
+ *	condition code, see STS$K_* constant
+ */
 static int	pdu_recv	(
 		int	sd,
 		void	*pdubuf,
@@ -601,8 +682,8 @@ gost_ctx gctx;
 
 	/* So we got all necessary initial data from server - display it ! */
 	$LOG(STS$K_INFO, "Client context initialization, input data (has been gotten from server) :");
-	$LOG(STS$K_INFO, "p             : %s", BN_bn2hex (p));
-	$LOG(STS$K_INFO, "g             : %s", BN_bn2hex (g));
+	$LOG(STS$K_INFO, "       p             : %s", BN_bn2hex (p));
+	$LOG(STS$K_INFO, "       g             : %s", BN_bn2hex (g));
 	$LOG(STS$K_INFO, "Server DH public key : %s", BN_bn2hex (spubk));
 
 	/* Generate client's Publick/Private kesy [air */
@@ -670,7 +751,7 @@ gost_ctx gctx;
 		len = be32toh(pdu->r_hdr.u_len);
 		cp = (char *) &pdu->r_tlv[0];
 
-		$DUMPHEX(&pdu->r_tlv[0], len);
+		//$DUMPHEX(&pdu->r_tlv[0], len);
 
 		/* Decrypt payload part of the PDU, we don't account that GOST 89 is a 8-byte/block alghorytm,
 		 * just be ensure that a length of the PDU buffer is enough more the actual length of the PDU's payload
@@ -681,16 +762,22 @@ gost_ctx gctx;
 		if ( len % 8 )
 			gostdecrypt(&gctx, cp, cp);
 
+		//$DUMPHEX(&pdu->r_tlv[0], len);
+
 		/* Extract a TLV with test data from PDU */
 		len = sizeof(buf);
 		if ( !(1 & (status = avproto_get (pdu, NULL, VCLOUD$K_TAG_DATA, &v_type, &buf, &len))) )
 			return	$LOG(STS$K_ERROR, "No DATA in the Server's TLV list");
 
-		$DUMPHEX(&buf, len);
+		$LOG(STS$K_SUCCESS, "[#%02.2d] Got data [0:%d]='%.*s'", i, len, len, &buf);
 		}
 
-	while ( !g_exit_flag )
-		for ( status = 2; status = sleep(status); );
+
+	for ( status = 3; status = sleep(status); );
+
+	close(sd);
+
+	return	STS$K_SUCCESS;
 }
 
 
@@ -822,6 +909,8 @@ gost_ctx gctx;
 	**	+--------+----------------------+
 	**	 Plain   |  Encrypted part
 	**
+	**
+	**
 	** So initialize GOST 89 context with default parameters
 	**/
 	gost_init(&gctx, NULL);
@@ -841,10 +930,20 @@ gost_ctx gctx;
 		/* Be advised that the GOST 89 is the 64-bits block algoritm, so we need to pad encrypted block
 		 * at 8 octets/64 bits boundary.
 		 *
-		 * In our case we will just add special TLV with 7 octets length of data, this
+		 * In our case we will just add special TLV with 7+ octets length of data, this
 		 * TLV must be last added !!!
 		 */
-		avproto_put (pdu, sizeof(pdubuf), VCLOUD$K_TAG_PADDING, TAG$K_BBLOCK, VCLOUD$K_PADDING,  sizeof (VCLOUD$K_PADDING));
+		len = be32toh(pdu->r_hdr.u_len);
+		if ( len % GOST89_BLOCK_SIZE )
+			{
+			len %= GOST89_BLOCK_SIZE;
+
+			if ( len  >  sizeof(AVPROTO_TLV) )
+				len = GOST89_BLOCK_SIZE - (len - sizeof(AVPROTO_TLV));
+			else	len = GOST89_BLOCK_SIZE - (len + sizeof(AVPROTO_TLV));
+
+			avproto_put (pdu, sizeof(pdubuf), VCLOUD$K_TAG_PADDING, TAG$K_BBLOCK, VCLOUD$K_PADDING,  len);
+			}
 
 		/* Get length of the payload from PDU's header */
 		len = be32toh(pdu->r_hdr.u_len);
@@ -867,17 +966,15 @@ gost_ctx gctx;
 		if ( !(1 & (status = pdu_xmit (insd, pdu))) )
 			return	$LOG(status, "Error sending TestData PDU");
 
-		$DUMPHEX(&pdu->r_tlv[0], len);
+		// $DUMPHEX(&pdu->r_tlv[0], len);
 		}
 
-
-
-	for ( status = 13; status = sleep(status); );
+	for ( status = 3; status = sleep(status); );
 
 	close (insd);
 	close(sd);
 
-	pthread_exit(&status);
+	return	STS$K_SUCCESS;
 }
 
 int	main	(int argc, char **argv)
@@ -886,7 +983,7 @@ int	status, rc;
 char	*cp, buf[512];
 BIGNUM	*cprivk, *cpubk, *sprivk, *spubk, *sskey, *cskey, *p, *g;
 BN_CTX	*bn_ctx; /* used internally by the bignum lib */
-pthread_t	tid;
+pthread_t	stid, ctid;
 
 #if	0
 	$LOG(STS$K_INFO, "Server context initialization ...");
@@ -948,20 +1045,17 @@ pthread_t	tid;
 	/*
 	 * Second part of the demonstration ...
 	 */
-	status = pthread_create(&tid, NULL, th_server, NULL);
-	$LOG(STS$K_INFO, "Server thread has been created, status = %d", status);
+	status = pthread_create(&stid, NULL, th_server, NULL);
+	$LOG(STS$K_SUCCESS, "Server thread has been created, status = %d", status);
 
 	/* Take 2 second to server thread to be ready to acccept client's connection ... */
 	for ( status = 2; status = sleep(status); );
 
-	status = pthread_create(&tid, NULL, th_client, NULL);
-	$LOG(STS$K_INFO, "Client thread has been created, status = %d", status);
+	status = pthread_create(&ctid, NULL, th_client, NULL);
+	$LOG(STS$K_SUCCESS, "Client thread has been created, status = %d", status);
 
+	pthread_join (stid, NULL);
+	pthread_join (ctid, NULL);
 
-	/* Hibernate ... */
-	while ( !g_exit_flag )
-		{
-		for ( status = 2; status = sleep(status); );
-		$LOG(STS$K_INFO, "Press Control-C to stop ...", status);
-		}
+	$LOG(STS$K_SUCCESS, "Normal successfull completion");
 }
