@@ -1,5 +1,6 @@
 ﻿#define	__MODULE__	"DHEXMPL"
-#define	__IDENT__	"X.00-04"
+#define	__IDENT__	"X.00-04ECO1"
+#define	__REV__		"0.04.1"
 
 #ifdef	__GNUC__
 	#ident			__IDENT__
@@ -79,6 +80,8 @@
 **
 **	14-NOV-2019	RRL	X.00-04 : Corrected logic of encryption with block based GOST 89 by adding
 **				special PADDING TLV into the PDU.
+**
+**	11-DEC-2019	RRL	X.00-04ECO1 : Added missed of introducing session key into the GOST context
 **
 */
 
@@ -621,9 +624,9 @@ static	int	th_client	(void)
 {
 int	status = 0, rc, sd  =-1, len = 0, v_type, i, j;
 struct sockaddr_in servaddr = { 0 };
-char	pdubuf[8192], buf[512], *cp;
+char	pdubuf[8192], buf[512], *cp, gskey[GOST89_KEY_SIZE];
 AVPROTO_PDU *pdu = (AVPROTO_PDU *) pdubuf;
-BIGNUM	*cprivk, *cpubk, *spubk, *cskey, *p, *g;
+BIGNUM	*cprivk, *cpubk, *spubk, *bn_cskey, *p, *g;
 gost_ctx gctx;
 
 	/*
@@ -699,11 +702,11 @@ gost_ctx gctx;
 	/* Compute Session key at server and client sides */
 	$LOG(STS$K_INFO, "Session keys generation ...");
 
-	cskey = BN_new();
+	bn_cskey = BN_new();
 
-	__dh_session_key (spubk, cprivk, p, cskey);
+	__dh_session_key (spubk, cprivk, p, bn_cskey);
 
-	cp = strcpy(buf, BN_bn2hex (cskey));
+	cp = strcpy(buf, BN_bn2hex (bn_cskey));
 	rc = strlen(buf) / 2;
 	$LOG(STS$K_INFO, "Client DH session key: %s (%d/%d octets/bits)", buf, rc, rc * 8);
 
@@ -739,6 +742,9 @@ gost_ctx gctx;
 	** So initialize GOST 89 context with default parameters
 	**/
 	gost_init(&gctx, NULL);
+	BN_bn2bin(bn_cskey, gskey);	/* Convert Session Key from BN to big endian */
+	gost_key (&gctx, gskey);	/* Apply the session key for the GOST context*/
+
 
 
 	/* Receive 13 PDU s ... */
@@ -785,11 +791,11 @@ gost_ctx gctx;
 static	int	th_server ( void )
 {
 int	status, sd = -1, insd = -1, len, v_type, rc, i, j;
-char	buf [512] = {0}, *cp, pdubuf[8192];
+char	buf [512] = {0}, *cp, pdubuf[8192], gskey[GOST89_KEY_SIZE];
 AVPROTO_PDU *pdu = (AVPROTO_PDU *) pdubuf;
 struct sockaddr_in servaddr = {0}, insk = {0};
 socklen_t slen = sizeof(struct sockaddr);
-BIGNUM	*cpubk, *sprivk, *spubk, *sskey, *p, *g;
+BIGNUM	*cpubk, *sprivk, *spubk, *bn_sskey, *p, *g;
 gost_ctx gctx;
 
 	$LOG(STS$K_INFO, "Server DH context initialization ...");
@@ -890,10 +896,10 @@ gost_ctx gctx;
 	/* Compute Session key  */
 	$LOG(STS$K_INFO, "Session keys generation ...");
 
-	sskey = BN_new();
+	bn_sskey = BN_new();
 
-	__dh_session_key (cpubk, sprivk, p, sskey);
-	cp = strcpy(buf, BN_bn2hex (sskey));
+	__dh_session_key (cpubk, sprivk, p, bn_sskey);
+	cp = strcpy(buf, BN_bn2hex (bn_sskey));
 	rc = strlen(buf) / 2;
 	$LOG(STS$K_INFO, "Server DH session key: %s (%d/%d octets/bits)", buf, rc, rc * 8);
 
@@ -914,6 +920,8 @@ gost_ctx gctx;
 	** So initialize GOST 89 context with default parameters
 	**/
 	gost_init(&gctx, NULL);
+	BN_bn2bin(bn_sskey, gskey);	/* Convert Session Key from BN to big endian */
+	gost_key (&gctx, gskey);	/* Apply the session key for the GOST context*/
 
 
 	/* Send 13 PDU s ... */
