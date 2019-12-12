@@ -1,6 +1,6 @@
 ﻿#define	__MODULE__	"DHEXMPL"
-#define	__IDENT__	"X.00-04ECO2"
-#define	__REV__		"0.04.2"
+#define	__IDENT__	"X.00-05"
+#define	__REV__		"0.05.0"
 
 #ifdef	__GNUC__
 	#ident			__IDENT__
@@ -84,6 +84,7 @@
 **	11-DEC-2019	RRL	X.00-04ECO1 : Added missed of introducing session key into the GOST context
 **
 **	12-DEC-2019	RRL	X.00-04ECO2 : Removed unused stuff
+**				X.00-05 : Implemented two-way data test exchange over encrypted channel
 **
 */
 
@@ -747,6 +748,8 @@ gost_ctx gctx;
 	BN_bn2bin(bn_cskey, gskey);	/* Convert Session Key from BN to big endian */
 	gost_key (&gctx, gskey);	/* Apply the session key for the GOST context*/
 
+	$LOG(STS$K_INFO, "Receive 13 PDU with test data ...");
+
 	/* Receive 13 PDU s ... */
 	for (i = 0; i < 13; i++)
 		{
@@ -757,15 +760,11 @@ gost_ctx gctx;
 		len = be32toh(pdu->r_hdr.u_len);
 		cp = (char *) &pdu->r_tlv[0];
 
-		//$DUMPHEX(&pdu->r_tlv[0], len);
-
 		/* Decrypt payload part of the PDU, we don't account that GOST 89 is a 8-byte/block alghorytm,
 		 * just be ensure that a length of the PDU buffer is enough more the actual length of the PDU's payload
 		 */
 		for (j = len/8; j--; cp += 8)
-			gostdecrypt(&gctx, cp, cp);	/*decrypts one 64 bit block */
-
-		//$DUMPHEX(&pdu->r_tlv[0], len);
+			gostdecrypt(&gctx, cp, cp);	/* decrypts one 64 bit block */
 
 		/* Extract a TLV with test data from PDU */
 		len = sizeof(buf);
@@ -774,6 +773,55 @@ gost_ctx gctx;
 
 		$LOG(STS$K_SUCCESS, "[#%02.2d] Got data [0:%d]='%.*s'", i, len, len, &buf);
 		}
+
+
+	$LOG(STS$K_INFO, "Send 13 PDU with test data ...");
+
+	/* Send 13 PDU s ... */
+	for (i = 0; i < 13; i++)
+		{
+		/* Fill buffer with test data , make PDU */
+		avproto_hset (pdu, VCLOUD$K_PROTOSIG, KDEPO$C_TESTDATA,  KDEPO$C_TESTDATA);
+
+		memset(buf, 0, sizeof(buf));
+		memset(buf, 'a' + i, DH$SZ_TESTDATA);
+		avproto_put (pdu, sizeof(pdubuf), VCLOUD$K_TAG_DATA, TAG$K_BBLOCK, buf, DH$SZ_TESTDATA );
+
+
+		/* Be advised that the GOST 89 is the 64-bits block algoritm, so we need to pad encrypted block
+		 * at 8 octets/64 bits boundary.
+		 *
+		 * In our case we will just add special TLV with 7+ octets length of data, this
+		 * TLV must be last added !!!
+		 */
+		len = be32toh(pdu->r_hdr.u_len);
+		if ( len % GOST89_BLOCK_SIZE )
+			{
+			len %= GOST89_BLOCK_SIZE;
+
+			if ( len  >  sizeof(AVPROTO_TLV) )
+				len = GOST89_BLOCK_SIZE - (len - sizeof(AVPROTO_TLV));
+			else	len = GOST89_BLOCK_SIZE - (len + sizeof(AVPROTO_TLV));
+
+			avproto_put (pdu, sizeof(pdubuf), VCLOUD$K_TAG_PADDING, TAG$K_BBLOCK, VCLOUD$K_PADDING,  len);
+			}
+
+		/* Get length of the payload from PDU's header */
+		len = be32toh(pdu->r_hdr.u_len);
+		cp = (char *) &pdu->r_tlv[0];
+
+		/* Encrypt payload, we don't account that GOST 89 is a 8-byte/block alghorytm,
+		 * just be ensure that a length of the PDU buffer is enough more the actual length of the PDU's payload
+		 */
+		for (j = len/8; j--; cp += 8)
+			gostcrypt(&gctx, cp, cp);	/*encrypts one 64 bit block */
+
+
+		/* Send TestData PDU over has been established TCP-connection ...*/
+		if ( !(1 & (status = pdu_xmit (sd, pdu))) )
+			return	$LOG(status, "Error sending TestData PDU");
+		}
+
 
 
 	for ( status = 3; status = sleep(status); );
@@ -921,6 +969,8 @@ gost_ctx gctx;
 	gost_key (&gctx, gskey);	/* Apply the session key for the GOST context*/
 
 
+	$LOG(STS$K_INFO, "Send 13 PDU with test data ...");
+
 	/* Send 13 PDU s ... */
 	for (i = 0; i < 13; i++)
 		{
@@ -954,8 +1004,6 @@ gost_ctx gctx;
 		len = be32toh(pdu->r_hdr.u_len);
 		cp = (char *) &pdu->r_tlv[0];
 
-
-
 		/* Encrypt payload, we don't account that GOST 89 is a 8-byte/block alghorytm,
 		 * just be ensure that a length of the PDU buffer is enough more the actual length of the PDU's payload
 		 */
@@ -966,8 +1014,33 @@ gost_ctx gctx;
 		/* Send TestData PDU over has been established TCP-connection ...*/
 		if ( !(1 & (status = pdu_xmit (insd, pdu))) )
 			return	$LOG(status, "Error sending TestData PDU");
+		}
 
-		// $DUMPHEX(&pdu->r_tlv[0], len);
+
+	$LOG(STS$K_INFO, "Receive 13 PDU with test data ...");
+
+	/* Receive 13 PDU s ... */
+	for (i = 0; i < 13; i++)
+		{
+		if ( 0 > (status = pdu_recv(insd, pdubuf, sizeof(pdubuf))) )
+			return	$LOG(STS$K_ERROR, "Error receiving TestData PDU");
+
+		/* Get length of the payload from PDU's header */
+		len = be32toh(pdu->r_hdr.u_len);
+		cp = (char *) &pdu->r_tlv[0];
+
+		/* Decrypt payload part of the PDU, we don't account that GOST 89 is a 8-byte/block alghorytm,
+		 * just be ensure that a length of the PDU buffer is enough more the actual length of the PDU's payload
+		 */
+		for (j = len/8; j--; cp += 8)
+			gostdecrypt(&gctx, cp, cp);	/*decrypts one 64 bit block */
+
+		/* Extract a TLV with test data from PDU */
+		len = sizeof(buf);
+		if ( !(1 & (status = avproto_get (pdu, NULL, VCLOUD$K_TAG_DATA, &v_type, &buf, &len))) )
+			return	$LOG(STS$K_ERROR, "No DATA in the Client's TLV list");
+
+		$LOG(STS$K_SUCCESS, "[#%02.2d] Got data [0:%d]='%.*s'", i, len, len, &buf);
 		}
 
 	for ( status = 3; status = sleep(status); );
@@ -986,63 +1059,6 @@ BIGNUM	*cprivk, *cpubk, *sprivk, *spubk, *sskey, *cskey, *p, *g;
 BN_CTX	*bn_ctx; /* used internally by the bignum lib */
 pthread_t	stid, ctid;
 
-#if	0
-	$LOG(STS$K_INFO, "Server context initialization ...");
-
-	p = BN_new();
-	g = BN_new();
-	sprivk = BN_new();
-	spubk = BN_new();
-
-	__dh_server_init(sprivk, p, g, spubk);
-
-	$LOG(STS$K_INFO, "       p             : %s", BN_bn2hex (p));
-	$LOG(STS$K_INFO, "       g             : %s", BN_bn2hex (g));
-
-	$LOG(STS$K_INFO, "Server DH private key: %s", BN_bn2hex (sprivk));
-	$LOG(STS$K_INFO, "Server DH public key : %s", BN_bn2hex (spubk));
-
-
-	/*
-	 * Send to client: p, g, Server's publick key
-	 *  .....
-	 */
-
-
-	/* Generate client's keys  with has been given from server: A  (erver's public key), p, g */
-	$LOG(STS$K_INFO, "Client context initialization, input data (has been gotten from server) :");
-	$LOG(STS$K_INFO, "\t       p             : %s", BN_bn2hex (p));
-	$LOG(STS$K_INFO, "\t       g             : %s", BN_bn2hex (g));
-	$LOG(STS$K_INFO, "\tServer DH public key : %s", BN_bn2hex (spubk));
-
-	cprivk = BN_new();
-	cpubk = BN_new();
-
-	__dh_client_init(cprivk, p, g, cpubk);
-
-	$LOG(STS$K_INFO, "Client DH private key: %s", BN_bn2hex (cprivk));
-	$LOG(STS$K_INFO, "Client DH public key : %s", BN_bn2hex (cpubk));
-
-
-	/* Compute Session key at server and client sides */
-	$LOG(STS$K_INFO, "Session keys generation ...");
-
-	sskey = BN_new();
-	cskey = BN_new();
-
-	__dh_session_key (cpubk, sprivk, p, sskey);
-	cp = strcpy(buf, BN_bn2hex (sskey));
-	rc = strlen(buf) / 2;
-	$LOG(STS$K_INFO, "Server DH session key: %s (%d/%d octets/bits)", buf, rc, rc * 8);
-
-	__dh_session_key (spubk, cprivk, p, cskey);
-	cp = strcpy(buf, BN_bn2hex (cskey));
-	rc = strlen(buf) / 2;
-	$LOG(STS$K_INFO, "Client DH session key: %s (%d/%d octets/bits)", buf, rc, rc * 8);
-
-
-
-#endif
 	/*
 	 * Second part of the demonstration ...
 	 */
