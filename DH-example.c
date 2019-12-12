@@ -1,6 +1,6 @@
 ﻿#define	__MODULE__	"DHEXMPL"
-#define	__IDENT__	"X.00-04ECO1"
-#define	__REV__		"0.04.1"
+#define	__IDENT__	"X.00-04ECO2"
+#define	__REV__		"0.04.2"
 
 #ifdef	__GNUC__
 	#ident			__IDENT__
@@ -14,12 +14,12 @@
 /*
 **++
 **
-**  FACILITY:  An example of Anonimous Diffie-Hellman
+**  FACILITY:  An example of Anonymous Diffie-Hellman and GOST
 **
-**  ABSTRACT:  An example of building encrypted channel by using keys' interchange base on Anonymous Diffie-Hellman
+**  ABSTRACT:  An example of building encrypted channel by using keys' interchange based on Anonymous Diffie-Hellman
 **	alghorytm
 **
-**  DESCRIPTION: Just a demonatration of using OpenSSL API BN's routines to implement Diffie-Hellman keys exchange.
+**  DESCRIPTION: Just a demonastration of using OpenSSL API BN's routines to implement Diffie-Hellman keys exchange.
 **
 **  ENVIRONMENT: Linux, Windows
 **
@@ -83,12 +83,15 @@
 **
 **	11-DEC-2019	RRL	X.00-04ECO1 : Added missed of introducing session key into the GOST context
 **
+**	12-DEC-2019	RRL	X.00-04ECO2 : Removed unused stuff
+**
 */
 
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<string.h>
 #include	<unistd.h>
+
 #include	<errno.h>
 #include	<poll.h>
 #include	<pthread.h>
@@ -689,7 +692,7 @@ gost_ctx gctx;
 	$LOG(STS$K_INFO, "       g             : %s", BN_bn2hex (g));
 	$LOG(STS$K_INFO, "Server DH public key : %s", BN_bn2hex (spubk));
 
-	/* Generate client's Publick/Private kesy [air */
+	/* Generate client's Publick/Private keys pair */
 	cprivk = BN_new();
 	cpubk = BN_new();
 
@@ -709,7 +712,6 @@ gost_ctx gctx;
 	cp = strcpy(buf, BN_bn2hex (bn_cskey));
 	rc = strlen(buf) / 2;
 	$LOG(STS$K_INFO, "Client DH session key: %s (%d/%d octets/bits)", buf, rc, rc * 8);
-
 
 
 	/*
@@ -745,8 +747,6 @@ gost_ctx gctx;
 	BN_bn2bin(bn_cskey, gskey);	/* Convert Session Key from BN to big endian */
 	gost_key (&gctx, gskey);	/* Apply the session key for the GOST context*/
 
-
-
 	/* Receive 13 PDU s ... */
 	for (i = 0; i < 13; i++)
 		{
@@ -763,10 +763,7 @@ gost_ctx gctx;
 		 * just be ensure that a length of the PDU buffer is enough more the actual length of the PDU's payload
 		 */
 		for (j = len/8; j--; cp += 8)
-			gostdecrypt(&gctx, cp, cp);	/*encrypts one 64 bit block */
-
-		if ( len % 8 )
-			gostdecrypt(&gctx, cp, cp);
+			gostdecrypt(&gctx, cp, cp);	/*decrypts one 64 bit block */
 
 		//$DUMPHEX(&pdu->r_tlv[0], len);
 
@@ -964,10 +961,6 @@ gost_ctx gctx;
 		 */
 		for (j = len/8; j--; cp += 8)
 			gostcrypt(&gctx, cp, cp);	/*encrypts one 64 bit block */
-
-		if ( status = len % 8 )
-			gostcrypt(&gctx, cp, cp);
-
 
 
 		/* Send TestData PDU over has been established TCP-connection ...*/
